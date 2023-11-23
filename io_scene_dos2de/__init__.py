@@ -14,6 +14,7 @@
 #  along with this program.  If not, see <http://www.gnu.org/licenses/>.
 #
 # ##### END GPL LICENSE BLOCK #####
+import traceback
 
 if "bpy" in locals():
     import importlib
@@ -34,7 +35,7 @@ from bpy.props import StringProperty, BoolProperty, FloatProperty, EnumProperty,
 from bpy_extras.io_utils import ExportHelper, ImportHelper
 
 from math import radians, degrees
-from mathutils import Euler, Matrix
+from mathutils import Euler, Matrix, Vector
 
 from . import export_dae
 
@@ -521,8 +522,20 @@ class ExportTargetCollector:
 
 
     def should_export_object(self, obj):
+        props = obj.data.ls_properties
         if obj.type not in self.options.object_types:
             trace(f' - {obj.name}: Not exporting objects of type {obj.type}')
+            return False
+        if obj.type == "ARMATURE" and props.do_not_export == True:
+            trace(f' - {obj.name}: Tagged as never exported')
+            return False
+        if obj.modifiers:
+            for modifier in obj.modifiers:
+                if modifier.object.type  == "ARMATURE" and modifier.object.data.ls_properties.do_not_export == True:
+                    trace(f' - {obj.name}: Tagged as never exported')
+                    return False
+        if obj.parent and obj.parent.type == "ARMATURE" and obj.parent.data.ls_properties.do_not_export == True:
+            trace(f' - {obj.name}: Tagged as never exported')
             return False
         if self.options.use_export_visible and obj.hide_get() or obj.hide_select:
             trace(f' - {obj.name}: Not visible')
@@ -1355,116 +1368,125 @@ class DIVINITYEXPORTER_OT_export_collada(Operator, ExportHelper):
             activeObject = bpy.context.view_layer.objects.active
         
         selectedObjects = []
-        copies = {}
-
-        if activeObject is not None and not activeObject.hide_get():
-            bpy.ops.object.mode_set(mode="OBJECT")
-
-        collector = ExportTargetCollector(self)
-        self.objects_to_export = collector.collect(context.scene.objects)
-
-        for obj in self.objects_to_export.ordered_targets:
-            if obj.select_get():
-                selectedObjects.append(obj)
-                obj.select_set(False)
-
-        if not self.validate_export_order(self.objects_to_export.ordered_targets):
-            return {"FINISHED"}
-        
-        context.scene.ls_properties.metadata_version = ColladaMetadataLoader.LSLIB_METADATA_VERSION
-
-        trace(f'Copying objects:')
-        for obj in self.objects_to_export.ordered_targets:
-            if obj.parent is None or not self.objects_to_export.should_export(obj.parent):
-                self.make_copy_recursive(context, obj, copies, None)
-
-        ordered_copies = []
-        for obj in self.objects_to_export.ordered_targets:
-            ordered_copies.append((obj, copies[obj.name]))
-
-        trace(f'Preparing hierarchy:')
-        # Update parents of copied objects before performing any modifications;
-        # otherwise the transforms may not propagate to children properly
-        for (orig, obj) in ordered_copies:
-            self.update_hierarchy(context, copies, orig, obj)
-
-        trace(f'Applying transforms:')
-        for (orig, obj) in ordered_copies:
-            self.apply_all_object_transforms(context, copies, orig, obj)
-
-        keywords = self.as_keywords(ignore=("axis_forward",
-                                            "axis_up",
-                                            "global_scale",
-                                            "check_existing",
-                                            "filter_glob",
-                                            "xna_validate",
-                                            "filepath"
-                                            ))
-
-        exported_pathways = []
-
-        single_mode = self.batch_mode == False
-
-        if self.batch_mode:
-            if self.use_anim:
-                single_mode = True
-            else:
-                if self.use_active_layers:
-                    progress_total = len(list(i for i in range(20) if context.scene.layers[i]))
-                    for i in range(20):
-                        if context.scene.layers[i]:
-                            export_list = list(filter(lambda orig, obj: obj.layers[i], ordered_copies))
-                            export_name = "{}_Layer{}".format(bpy.path.basename(bpy.context.blend_data.filepath), i)
-
-                            if self.auto_name == "LAYER" and "namedlayers" in bpy.data.scenes[context.scene.name]:
-                                namedlayers = getattr(bpy.data.scenes[context.scene.name], "namedlayers", None)
-                                if namedlayers is not None:
-                                    export_name = namedlayers.layers[i].name
-                            
-                            export_filepath = bpy.path.ensure_ext("{}\\{}".format(self.directory, export_name), self.filename_ext)
-                            print("[DOS2DE-Exporter] Batch exporting layer '{}' as '{}'.".format(i, export_filepath))
-
-                            if export_dae.save(self, context, export_list, filepath=export_filepath, **keywords) == {"FINISHED"}:
-                                exported_pathways.append(export_filepath)
-                            else:
-                                report( "[DOS2DE-Exporter] Failed to export '{}'.".format(export_filepath))
-                else:
-                    single_mode = True
-
-        if single_mode:
-            result = export_dae.save(self, context, copies.values(), filepath=str(collada_path), **keywords)
-            if result == {"FINISHED"}:
-                exported_pathways.append(str(collada_path))
-
-        if not self.keep_copies:
-            self.remove_copies(copies)
-
-        bpy.ops.object.select_all(action='DESELECT')
-        
-        for obj in selectedObjects:
-            obj.select_set(True)
-        
-        if activeObject is not None:
-            bpy.context.view_layer.objects.active = activeObject
-        
-        # Return to previous mode
         try:
-            if current_mode is not None and activeObject is not None and not activeObject.hide_get():
-                if activeObject.type != "ARMATURE" and current_mode == "POSE":
-                    bpy.ops.object.mode_set(mode="OBJECT")
+            copies = {}
+
+            if activeObject is not None and not activeObject.hide_get():
+                bpy.ops.object.mode_set(mode="OBJECT")
+
+            collector = ExportTargetCollector(self)
+            self.objects_to_export = collector.collect(context.scene.objects)
+
+            for obj in self.objects_to_export.ordered_targets:
+                if obj.select_get():
+                    selectedObjects.append(obj)
+                    obj.select_set(False)
+
+            if not self.validate_export_order(self.objects_to_export.ordered_targets):
+                return {"FINISHED"}
+
+            context.scene.ls_properties.metadata_version = ColladaMetadataLoader.LSLIB_METADATA_VERSION
+
+            trace(f'Copying objects:')
+            for obj in self.objects_to_export.ordered_targets:
+                if obj.parent is None or not self.objects_to_export.should_export(obj.parent):
+                    self.make_copy_recursive(context, obj, copies, None)
+
+            ordered_copies = []
+            for obj in self.objects_to_export.ordered_targets:
+                ordered_copies.append((obj, copies[obj.name]))
+
+            trace(f'Preparing hierarchy:')
+            # Update parents of copied objects before performing any modifications;
+            # otherwise the transforms may not propagate to children properly
+            for (orig, obj) in ordered_copies:
+                self.update_hierarchy(context, copies, orig, obj)
+
+            trace(f'Applying transforms:')
+            for (orig, obj) in ordered_copies:
+                self.apply_all_object_transforms(context, copies, orig, obj)
+
+            keywords = self.as_keywords(ignore=("axis_forward",
+                                                "axis_up",
+                                                "global_scale",
+                                                "check_existing",
+                                                "filter_glob",
+                                                "xna_validate",
+                                                "filepath"
+                                                ))
+
+            exported_pathways = []
+
+            single_mode = self.batch_mode == False
+
+            if self.batch_mode:
+                if self.use_anim:
+                    single_mode = True
                 else:
-                    bpy.ops.object.mode_set(mode=current_mode)
+                    if self.use_active_layers:
+                        progress_total = len(list(i for i in range(20) if context.scene.layers[i]))
+                        for i in range(20):
+                            if context.scene.layers[i]:
+                                export_list = list(filter(lambda orig, obj: obj.layers[i], self.objects_to_export.ordered_targets))
+                                export_name = "{}_Layer{}".format(bpy.path.basename(bpy.context.blend_data.filepath), i)
+
+                                if self.auto_name == "LAYER" and "namedlayers" in bpy.data.scenes[context.scene.name]:
+                                    namedlayers = getattr(bpy.data.scenes[context.scene.name], "namedlayers", None)
+                                    if namedlayers is not None:
+                                        export_name = namedlayers.layers[i].name
+
+                                export_filepath = bpy.path.ensure_ext("{}\\{}".format(self.directory, export_name), self.filename_ext)
+                                print("[DOS2DE-Exporter] Batch exporting layer '{}' as '{}'.".format(i, export_filepath))
+
+                                if export_dae.save(self, context, export_list, filepath=export_filepath, **keywords) == {"FINISHED"}:
+                                    exported_pathways.append(export_filepath)
+                                else:
+                                    report( "[DOS2DE-Exporter] Failed to export '{}'.".format(export_filepath))
+                    else:
+                        single_mode = True
+
+            if single_mode:
+                result = export_dae.save(self, context, copies.values(), filepath=str(collada_path), **keywords)
+                #bpy.ops.wm.collada_export(filepath=str(collada_path),limit_precision=True, sort_by_name=True, use_blender_profile=False)
+                meta_loader = ColladaMetadataLoader()
+                meta_loader.fix(context, str(collada_path), objects_to_export=self.objects_to_export)
+                if result == {"FINISHED"}:
+                    exported_pathways.append(str(collada_path))
+
+            if not self.keep_copies:
+                self.remove_copies(copies)
+
+            bpy.ops.object.select_all(action='DESELECT')
+
+            for obj in selectedObjects:
+                obj.select_set(True)
+
+            if activeObject is not None:
+                bpy.context.view_layer.objects.active = activeObject
+
+            # Return to previous mode
+            try:
+                if current_mode is not None and activeObject is not None and not activeObject.hide_get():
+                    if activeObject.type != "ARMATURE" and current_mode == "POSE":
+                        bpy.ops.object.mode_set(mode="OBJECT")
+                    else:
+                        bpy.ops.object.mode_set(mode=current_mode)
+            except Exception as e:
+                print("[DOS2DE-Collada] Error setting viewport mode:\n{}".format(e))
+
+            if tempfile_path is not None:
+                divine = DivineInvoker(addon_prefs, self.divine_settings)
+                for collada_file in exported_pathways:
+                    divine.dae_to_gr2(str(tempfile_path), str(output_path))
+                tempfile_path.unlink()
+
+            report("Export completed successfully.", "INFO")
+            return {"FINISHED"}
         except Exception as e:
-            print("[DOS2DE-Collada] Error setting viewport mode:\n{}".format(e))
-
-        if tempfile_path is not None:
-            divine = DivineInvoker(addon_prefs, self.divine_settings)
-            for collada_file in exported_pathways:
-                divine.dae_to_gr2(str(tempfile_path), str(output_path))
-            tempfile_path.unlink()
-
-        report("Export completed successfully.", "INFO")
-        return {"FINISHED"}
+            print(format(e))
+            traceback.print_exc()
+            self.remove_copies(copies)
+            return {"CANCELLED"}
 
 addon_keymaps = []
 
@@ -1515,6 +1537,9 @@ class LSMeshProperties(PropertyGroup):
         name="Cloth Flag 4",
         default = False
         )
+    bone_bindings: StringProperty(
+        name="Bone Bindings Order"
+    )
     export_order: IntProperty(
         name="Export Order",
         min = 0,
@@ -1541,6 +1566,10 @@ class LSArmatureProperties(PropertyGroup):
         default = ""
         )
 
+    do_not_export: BoolProperty(
+        name="Do not consider for export (incl. descendants)",
+        default= False
+    )
 class LSBoneProperties(PropertyGroup):
     export_order: IntProperty(
         name="Export Order",
@@ -1592,9 +1621,11 @@ class OBJECT_PT_LSPropertyPanel(Panel):
             layout.prop(props, "lod")
             layout.prop(props, "lod_distance")
             layout.prop(props, "export_order")
+            layout.prop(props, "bone_bindings")
         elif context.active_object.type == "ARMATURE":
             props = context.active_object.data.ls_properties
             layout.prop(props, "skeleton_resource_id")
+            layout.prop(props, "do_not_export")
 
 
 class BONE_PT_LSPropertyPanel(Panel):
@@ -1662,6 +1693,17 @@ class ColladaMetadataLoader:
         if meta_version > self.LSLIB_METADATA_VERSION:
             report("The Blender exporter plugin is too old for this LSLib version, please upgrade your exporter plugin!", "ERROR")
 
+    def fix_root_profile(self, context):
+        extra = et.SubElement(self.root, f"{self.SCHEMA}extra")
+        technique = et.SubElement(extra, f"{self.SCHEMA}technique")
+        technique.set("profile", "LSTools")
+        # et.SubElement(technique, f"{self.SCHEMA}LSLibMajor", attrib={"xmlns":''}, text="1")
+        # et.SubElement(technique, f"{self.SCHEMA}LSLibMinor", attrib={"xmlns":''}, text="18")
+        # et.SubElement(technique, f"{self.SCHEMA}LSLibPatch", attrib={"xmlns":''}, text="7")
+        version = et.SubElement(technique, f"{self.SCHEMA}MetadataVersion")
+        version.text="3"
+        # et.SubElement(technique, f"{self.SCHEMA}Game", attrib={"xmlns":''}, text="BaldursGate3")
+
 
     def find_anim_settings(self):
         for anim in self.root.findall(f"./{self.SCHEMA}library_animations/{self.SCHEMA}animation"):
@@ -1707,6 +1749,8 @@ class ColladaMetadataLoader:
                 props.impostor = True
             elif tag == 'ExportOrder':
                 props.export_order = int(ele.text) + 1
+            elif tag == 'BoneBindings':
+                props.bone_bindings = ele.text
             elif tag == 'LOD':
                 props.lod = int(ele.text)
             elif tag == 'LODDistance':
@@ -1776,6 +1820,186 @@ class ColladaMetadataLoader:
         if anim_settings is not None:
             self.load_anim_profile(context, anim_settings)
 
+    def fix_bone_profile(self, bone):
+        bones = [b for b in self.armature.data.bones if b.name == bone.attrib['name']]
+        if len(bones) == 0:
+            report("Couldnt load metadata on bone '" + bone.attrib['name'] + "' (object not found)", "ERROR")
+            return
+        boneObj = bones[0]
+        props = boneObj.ls_properties
+        # extra = et.SubElement(bone, f"{self.SCHEMA}extra")
+        # technique = et.SubElement(extra, f"{self.SCHEMA}technique", attrib={'profile': 'LSTools'})
+        # technique.text=str(props.export_order)
+        bone.attrib['sid']=bone.attrib['name']
+        bone.attrib['id']=f"Bone_{bone.attrib['name']}"
+        extra = bone.find(f"{self.SCHEMA}extra")
+        if extra:
+            boneIndex = extra.find(f"{self.SCHEMA}technique/{self.SCHEMA}BoneIndex")
+            if boneIndex:
+                boneIndex.attrib['xmlns'] = ''
+
+
+    def fix_bone_profiles(self, bone):
+        for child in bone:
+            if child.tag == f"{self.SCHEMA}node":
+                self.fix_bone_profiles(child)
+
+        if 'type' in bone.attrib and bone.attrib['type'] == 'JOINT':
+            self.fix_bone_profile(bone)
+
+    class Vertex:
+
+
+        def get_tup(self):
+            tup = (self.vertex.x, self.vertex.y, self.vertex.z, self.normal.x,
+                   self.normal.y, self.normal.z)
+            for t in self.uv:
+                tup = tup + (t.x, t.y)
+            if self.color is not None:
+                tup = tup + (self.color.x, self.color.y, self.color.z)
+            if self.tangent is not None:
+                tup = tup + (self.tangent.x, self.tangent.y, self.tangent.z)
+            if self.bitangent is not None:
+                tup = tup + (self.bitangent.x, self.bitangent.y,
+                             self.bitangent.z)
+            for t in self.bones:
+                tup = tup + (float(t), )
+            for t in self.weights:
+                tup = tup + (float(t), )
+
+            return tup
+
+        __slots__ = ("vertex", "normal", "tangent", "bitangent", "color", "uv",
+                     "uv2", "bones", "weights")
+
+        def __init__(self):
+            self.vertex = Vector((0.0, 0.0, 0.0))
+            self.normal = Vector((0.0, 0.0, 0.0))
+            self.tangent = None
+            self.bitangent = None
+            self.color = None
+            self.uv = []
+            self.uv2 = Vector((0.0, 0.0))
+            self.bones = []
+            self.weights = []
+    def fix(self, context, collada_path, objects_to_export):
+
+        et.register_namespace('', 'http://www.collada.org/2005/11/COLLADASchema')
+        self.tree = et.parse(collada_path)
+        self.root = self.tree.getroot()
+        for obj in objects_to_export.ordered_targets:
+            if obj.type == 'ARMATURE':
+                self.armature = obj
+            # else:
+            #     self.fix_tangent(obj)
+
+        self.fix_root_profile(context)
+        asset = self.root.find(f"{self.SCHEMA}asset")
+        asset.remove(asset.find(f"{self.SCHEMA}unit"))
+        # asset.remove(asset.find(f"{self.SCHEMA}up_axis"))
+        et.SubElement(asset, f"{self.SCHEMA}unit")
+        #self.root.remove(self.root.find(f"{self.SCHEMA}library_images"))
+        #self.root.remove(self.root.find(f"{self.SCHEMA}library_controllers"))
+        geometries = self.root.findall(f"{self.SCHEMA}library_geometries/{self.SCHEMA}geometry")
+        for geometry in geometries:
+            if geometry.attrib.get("id").endswith("mesh"):
+                geometry.attrib['id'] = geometry.attrib.get("id").replace("mesh", "geom")
+
+        floatArrays = self.root.findall(f"{self.SCHEMA}library_geometries/{self.SCHEMA}geometry/{self.SCHEMA}mesh/{self.SCHEMA}source/{self.SCHEMA}float_array")
+        # for floatArray in floatArrays:
+        #     floatSplit = floatArray.text.split(" ")
+        #     for idx, a in enumerate(floatSplit):
+        #         if floatSplit[idx] != '':
+        #             floatSplit[idx] = "%.6f" % float(floatSplit[idx])
+        #     floatArray.text = " ".join(floatSplit)
+
+        visualScene = self.root.find(f"{self.SCHEMA}library_visual_scenes")
+        visual_scene = visualScene.find(f"{self.SCHEMA}visual_scene")
+        visual_scene.attrib['id'] = "DefaultVisualScene"
+        visual_scene.attrib['name'] = "unnamed"
+        nodes = visual_scene.findall(f"./{self.SCHEMA}node")
+        # for node in nodes:
+        #     if node.attrib['id'] == 'Armature':
+        #         children = node.findall(f"./{self.SCHEMA}node")
+        #         idx = 0;
+        #         for child in children:
+        #             #self.fix_bone_profiles(child)
+        #             visual_scene.insert(idx, child)
+        #             idx = idx + 1
+        #         node.clear()
+        #         visual_scene.remove(node)
+        #     elif node.attrib['type'] == "NODE":
+        #         matrix = node.find(f"./{self.SCHEMA}matrix")
+        #         del node.attrib['type']
+        #         instance_geometry = node.find(f"./{self.SCHEMA}instance_geometry")
+        #         if instance_geometry.attrib.get('name'):
+        #             del instance_geometry.attrib['name']
+        #         node.remove(matrix)
+
+        # instance_visual_scene = self.root.find(f"{self.SCHEMA}scene/{self.SCHEMA}instance_visual_scene")
+        # instance_visual_scene.attrib['url'] = '#DefaultVisualScene'
+        et.indent(self.tree, space="  ", level=0)
+        self.tree.write(collada_path, short_empty_elements=True)
+        # anim_settings = self.find_anim_settings()
+        # self.load_mesh_profiles()
+        # self.load_armature_profiles()
+        # if anim_settings is not None:
+        #     self.load_anim_profile(context, anim_settings)
+
+    def fix_tangent(self, obj):
+        print(obj.type)
+        mesh = obj.to_mesh(preserve_all_data_layers=False, depsgraph=bpy.context.evaluated_depsgraph_get())
+        vertices = []
+        vertex_map = {}
+        surface_indices = {}
+        mesh.calc_tangents()
+        for fi in range(len(mesh.polygons)):
+            f = mesh.polygons[fi]
+
+            if not (f.material_index in surface_indices):
+                surface_indices[f.material_index] = []
+
+            indices = surface_indices[f.material_index]
+            vi = []
+
+            for lt in range(f.loop_total):
+                loop_index = f.loop_start + lt
+                ml = mesh.loops[loop_index]
+                mv = mesh.vertices[ml.vertex_index]
+
+                v = self.Vertex()
+                v.vertex = Vector(mv.co)
+
+                for xt in mesh.uv_layers:
+                    v.uv.append(Vector(xt.data[loop_index].uv))
+
+                v.tangent = Vector(ml.tangent)
+                v.bitangent = Vector(ml.bitangent)
+
+            tup = v.get_tup()
+            idx = 0
+            # Do not optmize if using shapekeys
+            if tup in vertex_map:
+                idx = vertex_map[tup]
+            else:
+                idx = len(vertices)
+                vertices.append(v)
+                vertex_map[tup] = idx
+
+            vi.append(idx)
+            # if (len(vi) > 2):  # Only triangles and above
+            indices.append(vi)
+        float_values = ""
+        float_values2 = ""
+        for v in vertices:
+            float_values += " {} {} {}".format(
+                "%.6f" % v.tangent.x, "%.6f" % v.tangent.y, "%.6f" % v.tangent.z)
+            float_values2 += " {} {} {}".format(
+                "%.6f" % v.bitangent.x, "%.6f" % v.bitangent.y, "%.6f" % v.bitangent.z)
+        tanget = et.SubElement(self.root, f"{self.SCHEMA}tanget", attrib={'name': obj.name})
+        tanget.text = float_values
+        bitanget = et.SubElement(self.root, f"{self.SCHEMA}bittanget", attrib={'name': obj.name})
+        bitanget.text = float_values2
 
 
 class DIVINITYEXPORTER_OT_import_collada(Operator, ImportHelper):

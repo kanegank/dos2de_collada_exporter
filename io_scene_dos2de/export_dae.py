@@ -564,6 +564,9 @@ class DaeExporter:
             if ls_props.export_order != 0:
                 self.writel(S_GEOM, 5, "<ExportOrder>" + str(ls_props.export_order - 1) + "</ExportOrder>")
 
+                if ls_props.bone_bindings != "":
+                    self.writel(S_GEOM, 5, "<BoneBindings>" + ls_props.bone_bindings + "</BoneBindings>")
+
             if ls_props.lod != 0:
                 self.writel(S_GEOM, 5, "<LOD>" + str(ls_props.lod) + "</LOD>")
 
@@ -748,13 +751,12 @@ class DaeExporter:
                     meshdata["morph_id"]))
             close_controller = True
         elif (armature is None):
-            self.writel(S_NODES, il, "<instance_geometry url=\"#{}\">".format(
+            self.writel(S_NODES, il, "<instance_geometry url=\"#{}\" />".format(
                 meshdata["id"]))
 
         if (close_controller):
             self.writel(S_NODES, il, "</instance_controller>")
-        else:
-            self.writel(S_NODES, il, "</instance_geometry>")
+
 
     def export_armature_bone(self, bone, il, si):
         is_ctrl_bone = (
@@ -783,8 +785,8 @@ class DaeExporter:
             si["bone_ids"][bone] = boneid
             si["bone_names"].append(bonesid)
             self.writel(
-                S_NODES, il, "<node id=\"{}\" sid=\"{}\" name=\"{}\" "
-                "type=\"JOINT\">".format(boneid, bonesid, bone.name))
+                S_NODES, il, "<node id=\"{}\" name=\"{}\" sid=\"{}\" "
+                "type=\"JOINT\">".format(boneid, bone.name, bonesid))
 
         if (is_ctrl_bone is False):
             il += 1
@@ -801,7 +803,7 @@ class DaeExporter:
 
         if (is_ctrl_bone is False):
             self.writel(
-                S_NODES, il, "<matrix sid=\"transform\">{}</matrix>".format(
+                S_NODES, il, "<matrix sid=\"Transform\">{}</matrix>".format(
                     strmtx(xform)))
 
         for c in bone.children:
@@ -814,7 +816,7 @@ class DaeExporter:
                 self.writel(S_NODES, il+2, "<technique profile=\"LSTools\">")
                 ls_props = bone.ls_properties
                 if ls_props.export_order != 0:
-                    self.writel(S_NODES, il+3, "<BoneIndex>" + str(ls_props.export_order - 1) + "</BoneIndex>")
+                    self.writel(S_NODES, il+3, "<BoneIndex xmlns=\"\">" + str(ls_props.export_order - 1) + "</BoneIndex>")
                 self.writel(S_NODES, il+2, "</technique>")
                 self.writel(S_NODES, il+1, "</extra>")
             il -= 1
@@ -1023,9 +1025,8 @@ class DaeExporter:
 
         curveid = self.export_curve(node.data)
 
-        self.writel(S_NODES, il, "<instance_geometry url=\"#{}\">".format(
+        self.writel(S_NODES, il, "<instance_geometry url=\"#{}\" />".format(
             curveid))
-        self.writel(S_NODES, il, "</instance_geometry>")
 
     def export_node(self, node, il):
         if (node not in self.valid_nodes):
